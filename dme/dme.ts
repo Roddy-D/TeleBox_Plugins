@@ -421,7 +421,7 @@ const dme = async (msg: Api.Message) => {
   // 显示帮助文档（仅在明确请求时）
   if (showHelp) {
     console.log("[DME] 用户请求帮助文档");
-    console.log(dmePlugin.description);
+    console.log(new DmePlugin().description);
     return;
   }
 

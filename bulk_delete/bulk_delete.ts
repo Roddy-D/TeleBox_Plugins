@@ -1,8 +1,44 @@
 import { Api } from "telegram";
 import { Plugin } from "@utils/pluginBase";
+import { createDirectoryInAssets } from "@utils/pathHelpers";
+import { JSONFilePreset } from "lowdb/node";
+import path from "path";
 
-// 存储每个用户的删除模式设置
-const userDeleteMode = new Map<string, boolean>();
+// 数据库文件路径
+const filePath = path.join(createDirectoryInAssets("bd"), "bd_config.json");
+
+// 数据库类型定义
+interface BdDB {
+  userDeleteMode: Record<string, boolean>;
+}
+
+// 获取数据库实例
+async function getDB() {
+  const db = await JSONFilePreset<BdDB>(filePath, { userDeleteMode: {} });
+  return db;
+}
+
+// 获取用户删除模式设置
+async function getUserDeleteMode(userId: string): Promise<boolean> {
+  try {
+    const db = await getDB();
+    return db.data.userDeleteMode[userId] !== false; // 默认开启删除他人权限
+  } catch (error) {
+    console.warn("获取bd用户设置失败:", error);
+    return true; // 默认开启删除他人权限
+  }
+}
+
+// 保存用户设置到数据库
+async function saveUserSetting(userId: string, canDeleteOthers: boolean) {
+  try {
+    const db = await getDB();
+    db.data.userDeleteMode[userId] = canDeleteOthers;
+    await db.write();
+  } catch (error) {
+    console.warn("保存bd用户设置失败:", error);
+  }
+}
 
 /**
  * 批量向下删除插件
@@ -24,7 +60,8 @@ const bd = async (msg: Api.Message) => {
 
   if (subCommand === "on" || subCommand === "off") {
     const canDeleteOthers = subCommand === "on";
-    userDeleteMode.set(userId, canDeleteOthers);
+    // 持久化保存设置
+    await saveUserSetting(userId, canDeleteOthers);
     const status = canDeleteOthers ? "开启" : "关闭";
     const feedbackMsg = await client.sendMessage(chatId, {
       message: `✅ 已${status}删除他人消息权限。`,
@@ -47,14 +84,64 @@ const bd = async (msg: Api.Message) => {
       const messagesToDelete: number[] = [msg.id]; // 包含指令本身
       let count = 0;
 
-      // 获取自己发送的消息
-      const myMessages = await client.getMessages(chatId, { limit: 100 });
-      const myUserMessages = myMessages.filter(
-        (m: Api.Message) => m.senderId?.equals(me.id) && m.id !== msg.id
-      );
+      // 检查用户权限设置和管理员权限
+      let isAdmin = false;
+      let canDeleteOthers = await getUserDeleteMode(userId);
 
-      for (let i = 0; i < Math.min(numArg, myUserMessages.length); i++) {
-        messagesToDelete.push(myUserMessages[i].id);
+      try {
+        const chat = await client.getEntity(chatId);
+        // Only check permissions in group chats or channels
+        if (
+          chat &&
+          (chat.className === "Channel" || chat.className === "Chat")
+        ) {
+          try {
+            const participant = await client.invoke(
+              new Api.channels.GetParticipant({
+                channel: chatId,
+                participant: me.id,
+              })
+            );
+
+            if (participant && participant.participant) {
+              const p = participant.participant;
+              if (
+                p.className === "ChannelParticipantCreator" ||
+                (p.className === "ChannelParticipantAdmin" &&
+                  p.adminRights?.deleteMessages)
+              ) {
+                isAdmin = true;
+              }
+            }
+          } catch (e) {
+            // 忽略权限检查错误，可能在私聊中
+          }
+        } else {
+          // 私聊中视为管理员
+          isAdmin = true;
+        }
+      } catch (e) {
+        console.warn("无法获取权限信息，可能是在私聊中:", e);
+      }
+
+      // 结合用户设置的删除权限与实际管理员权限
+      const finalCanDeleteOthers = canDeleteOthers && isAdmin;
+
+      // 获取最近的消息
+      const recentMessages = await client.getMessages(chatId, { limit: 100 });
+      const filteredMessages = recentMessages.filter((m: Api.Message) => {
+        // 排除当前指令消息
+        if (m.id === msg.id) return false;
+
+        // 如果可以删除他人消息，则包含所有消息
+        if (finalCanDeleteOthers) return true;
+
+        // 否则只包含自己的消息
+        return m.senderId?.equals(me.id);
+      });
+
+      for (let i = 0; i < Math.min(numArg, filteredMessages.length); i++) {
+        messagesToDelete.push(filteredMessages[i].id);
         count++;
       }
 
@@ -63,8 +150,10 @@ const bd = async (msg: Api.Message) => {
         await client.deleteMessages(chatId, messagesToDelete, {
           revoke: true,
         });
+
+        const messageType = finalCanDeleteOthers ? "最近的" : "您最近的";
         const feedbackMsg = await client.sendMessage(chatId, {
-          message: `✅ 成功删除您最近的 ${count} 条消息。`,
+          message: `✅ 成功删除${messageType} ${count} 条消息。`,
         });
         // 2秒后删除反馈消息
         setTimeout(async () => {
@@ -80,7 +169,7 @@ const bd = async (msg: Api.Message) => {
     }
 
     // B. 如果只是 .bd
-    const currentMode = userDeleteMode.get(userId) === false ? "关闭" : "开启";
+    const currentMode = (await getUserDeleteMode(userId)) ? "开启" : "关闭";
     const sentMsg = await client.sendMessage(chatId, {
       message: `⚠️ 请回复一条消息以确定删除范围，或使用 \`.bd <数字>\` 删除您最近的消息。\n💡 当前删除他人权限: ${currentMode} (.bd on/off 切换)`,
     });
@@ -104,7 +193,7 @@ const bd = async (msg: Api.Message) => {
   const endId = msg.id;
 
   let isAdmin = false;
-  let canDeleteOthers = userDeleteMode.get(userId) !== false; // 默认开启删除他人权限
+  let canDeleteOthers = await getUserDeleteMode(userId);
 
   try {
     const chat = await client.getEntity(chatId);

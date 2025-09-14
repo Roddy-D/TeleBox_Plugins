@@ -1,0 +1,50 @@
+name: Daily Commit Summary & Telegram Notification
+
+on:
+  schedule:
+    # 每天晚上 23:00 (UTC+8 15:00) 运行
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '指定日期 (YYYY-MM-DD，默认为今天)'
+        required: false
+        type: string
+
+jobs:
+  daily-summary:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    steps:
+    - name: Checkout TeleBox_Plugins repository
+      uses: actions/checkout@v4
+      with:
+        path: TeleBox_Plugins
+        fetch-depth: 0
+        
+    - name: Checkout TeleBox repository
+      id: checkout-telebox
+      uses: actions/checkout@v4
+      with:
+        repository: TeleBoxOrg/TeleBox
+        path: TeleBox
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
+        
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        
+    - name: Generate commit summary and send to Telegram
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        TARGET_DATE: ${{ github.event.inputs.date }}
+        CHECKOUT_SUCCESS: ${{ steps.checkout-telebox.outcome == 'success' }}
+      run: |
+        node TeleBox_Plugins/scripts/commit-summary.js

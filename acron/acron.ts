@@ -20,6 +20,12 @@ const filePath = path.join(
   createDirectoryInAssets("acron"),
   "acron_config.json"
 );
+
+function getRemarkFromMsg(msg: Api.Message | string, n: number): string {
+  return (typeof msg === "string" ? msg : msg?.message || "")
+    .replace(new RegExp(`^\\S+${Array(n).fill("\\s+\\S+").join("")}`), "")
+    .trim();
+}
 // DB schema and helpers
 type AcronType =
   | "send"
@@ -254,7 +260,7 @@ function buildCopy(task: AcronTask): string {
 }
 function buildCopyCommand(task: AcronTask): string {
   const cmd = buildCopy(task);
-  return cmd?.includes("\n") ? cmd : `<code>${cmd}</code>`;
+  return cmd?.includes("\n") ? `<pre>${cmd}</pre>` : `<code>${cmd}</code>`;
 }
 
 function tryParseRegex(input: string): RegExp {
@@ -328,6 +334,7 @@ async function scheduleTask(task: AcronTask) {
           await client.sendMessage(entityLike, {
             message: realtimeMsg, // 直接传入消息对象以便自动处理媒体/实体
             replyTo: t.replyTo ? toInt(t.replyTo) : undefined,
+            formattingEntities: realtimeMsg.entities,
           });
 
           if (idx >= 0) {
@@ -502,19 +509,31 @@ const help_text = `▎定时复制
 每天2点在指定ID或@name的对话中执行命令 <code>${mainPrefix}a foo bar</code>(可指定话题或回复消息)
 注意要换行写
 
-• ${mainPrefix}acron cmd 0 0 2 * * * 对话ID/@name [备注]
-${mainPrefix}a foo bar
+<pre>${mainPrefix}acron cmd 0 0 2 * * * 对话ID/@name [备注]
+${mainPrefix}a foo bar</pre>
 
-• ${mainPrefix}acron cmd 0 0 2 * * * 对话ID/@name|发送时话题的ID或回复消息的ID [备注]
-${mainPrefix}a foo bar
+<pre>${mainPrefix}acron cmd 0 0 2 * * * 对话ID/@name|发送时话题的ID或回复消息的ID [备注]
+${mainPrefix}a foo bar</pre>
 
-• <code>${mainPrefix}acron list</code> - 列出当前会话中的所有定时任务
-• <code>${mainPrefix}acron list all</code> - 列出所有的定时任务
-• <code>${mainPrefix}acron list del</code> - 列出当前会话中的类型为 del 的定时任务
-• <code>${mainPrefix}acron list all del</code> - 列出所有的类型为 del 的定时任务
+典型的使用场景:
+
+每天2点自动备份(调用 <code>${mainPrefix}bf</code> 命令)
+
+<pre>${mainPrefix}acron cmd 0 0 2 * * * me 定时备份
+.bf</pre>
+
+每天2点自动更新 <code>eat</code> 的表情包配置(调用 <code>${mainPrefix}eat set</code> 命令)
+
+<pre>${mainPrefix}acron cmd 0 0 2 * * * me 定时更新表情包
+${mainPrefix}eat set</pre>
+
+• <code>${mainPrefix}acron list</code>, <code>${mainPrefix}acron ls</code> - 列出当前会话中的所有定时任务
+• <code>${mainPrefix}acron ls all</code>, <code>${mainPrefix}acron la</code> - 列出所有的定时任务
+• <code>${mainPrefix}acron ls del</code> - 列出当前会话中的类型为 del 的定时任务
+• <code>${mainPrefix}acron ls all del</code>, <code>${mainPrefix}acron la del</code> - 列出所有的类型为 del 的定时任务
 • <code>${mainPrefix}acron rm 定时任务ID</code> - 删除指定的定时任务
-• <code>${mainPrefix}acron disable 定时任务ID</code> - 禁用指定的定时任务
-• <code>${mainPrefix}acron enable 定时任务ID</code> - 启用指定的定时任务
+• <code>${mainPrefix}acron disable/off 定时任务ID</code> - 禁用指定的定时任务
+• <code>${mainPrefix}acron enable/on 定时任务ID</code> - 启用指定的定时任务
 `;
 
 class AcronPlugin extends Plugin {
@@ -524,7 +543,7 @@ class AcronPlugin extends Plugin {
     (msg: Api.Message, trigger?: Api.Message) => Promise<void>
   > = {
     acron: async (msg: Api.Message) => {
-      const lines = msg.text?.trim()?.split(/\r?\n/g) || [];
+      const lines = msg.message?.trim()?.split(/\r?\n/g) || [];
 
       const parts = lines?.[0]?.split(/\s+/) || [];
 
@@ -540,9 +559,13 @@ class AcronPlugin extends Plugin {
           return;
         }
 
-        if (sub === "list") {
-          const p1 = (args[1] || "").toLowerCase();
-          const p2 = (args[2] || "").toLowerCase();
+        if (sub === "list" || sub === "ls" || sub === "la") {
+          let p1 = (args[1] || "").toLowerCase();
+          let p2 = (args[2] || "").toLowerCase();
+          if (sub === "la") {
+            p2 = p1;
+            p1 = "all";
+          }
 
           const scopeAll = p1 === "all";
           const maybeType = (scopeAll ? p2 : p1) as AcronType | "";
@@ -651,7 +674,7 @@ class AcronPlugin extends Plugin {
               if (fromChatId && fromMsgId) {
                 lines.push(
                   `消息: <a href="https://t.me/c/${String(
-                    (t as any).chatId ?? t.chat
+                    fromChatId ?? ""
                   ).replace("-100", "")}/${fromMsgId}">${fromMsgId}</a>`
                 );
               }
@@ -670,7 +693,12 @@ class AcronPlugin extends Plugin {
                   );
               }
               if (nextDt) {
-                lines.push(`下次: ${formatDate(nextDt.toJSDate())}`);
+                const dt: Date = (typeof (nextDt as any)?.toJSDate === "function")
+                  ? (nextDt as any).toJSDate()
+                  : (nextDt instanceof Date)
+                  ? nextDt
+                  : new Date(Number(nextDt));
+                lines.push(`下次: ${formatDate(dt)}`);
               }
               if (t.lastRunAt) {
                 lines.push(
@@ -759,7 +787,12 @@ class AcronPlugin extends Plugin {
           return;
         }
 
-        if (sub === "disable" || sub === "enable") {
+        if (
+          sub === "disable" ||
+          sub === "enable" ||
+          sub === "off" ||
+          sub === "on"
+        ) {
           const id = args[1];
           if (!id) {
             await msg.edit({
@@ -781,7 +814,7 @@ class AcronPlugin extends Plugin {
             return;
           }
           const t = db.data.tasks[idx];
-          if (sub === "disable") {
+          if (sub === "disable" || sub === "off") {
             if (t.disabled) {
               await msg.edit({
                 text: `任务 <code>${id}</code> 已处于禁用状态`,
@@ -893,7 +926,8 @@ class AcronPlugin extends Plugin {
             const entities: any = mm.entities
               ? JSON.parse(JSON.stringify(mm.entities))
               : undefined;
-            const remark = rest.slice(1).join(" ").trim();
+            // const remark = rest.slice(1).join(" ").trim();
+            const remark = getRemarkFromMsg(lines[0], 8);
             const replyTo = restChatArg[0];
 
             const task: SendTask = {
@@ -930,7 +964,8 @@ class AcronPlugin extends Plugin {
             return;
           } else if (sub === "cmd") {
             // 备注与回复ID
-            const remark = rest.slice(1).join(" ").trim();
+            // const remark = rest.slice(1).join(" ").trim();
+            const remark = getRemarkFromMsg(lines[0], 8);
             const replyTo = restChatArg[0];
             const message = lines?.[1]?.trim(); // 第二行
             if (!message) {
@@ -985,7 +1020,8 @@ class AcronPlugin extends Plugin {
             }
 
             // 备注与回复ID
-            const remark = rest.slice(1).join(" ").trim();
+            // const remark = rest.slice(1).join(" ").trim();
+            const remark = getRemarkFromMsg(lines[0], 8);
             const replyTo = restChatArg[0];
 
             if (sub === "copy") {
@@ -1055,19 +1091,13 @@ class AcronPlugin extends Plugin {
             }
           } else if (sub === "del") {
             const msgIdStr = rest[1];
-            let msgId = Number(msgIdStr);
-            if (!msgIdStr || Number.isNaN(msgId)) {
-              // 如果未提供，尝试从回复中获取
-              if (msg.isReply) {
-                const replied = await msg.getReplyMessage();
-                msgId = Number(replied?.id);
-              }
-            }
-            if (!msgId || Number.isNaN(msgId)) {
-              await msg.edit({ text: "请提供有效的消息ID，或回复一条消息" });
+
+            if (!msgIdStr) {
+              await msg.edit({ text: "请提供消息 ID" });
               return;
             }
-            const remark = rest.slice(2).join(" ").trim();
+            // const remark = rest.slice(2).join(" ").trim();
+            const remark = getRemarkFromMsg(lines[0], 9);
 
             const task: DelTask = {
               id,
@@ -1075,7 +1105,7 @@ class AcronPlugin extends Plugin {
               cron: cronExpr,
               chat: chatArg,
               chatId: hasChatId as any,
-              msgId: String(Math.trunc(msgId)),
+              msgId: msgIdStr,
               createdAt: String(Date.now()),
               remark: remark || undefined,
               display: display || undefined,
@@ -1099,15 +1129,9 @@ class AcronPlugin extends Plugin {
           } else if (sub === "pin") {
             // rest: [chat, msgId, notify, pmOneSide, ...remark]
             const msgIdStr = rest[1];
-            let msgId = Number(msgIdStr);
-            if (!msgIdStr || Number.isNaN(msgId)) {
-              if (msg.isReply) {
-                const replied = await msg.getReplyMessage();
-                msgId = Number(replied?.id);
-              }
-            }
-            if (!msgId || Number.isNaN(msgId)) {
-              await msg.edit({ text: "请提供有效的消息ID，或回复一条消息" });
+
+            if (!msgIdStr) {
+              await msg.edit({ text: "请提供消息 ID" });
               return;
             }
             const notifyRaw = (rest[2] || "").toLowerCase();
@@ -1122,7 +1146,8 @@ class AcronPlugin extends Plugin {
               v === "1" || v === "true" || v === "yes" || v === "y";
             const notify = parseBool(notifyRaw);
             const pmOneSide = parseBool(pmOneSideRaw);
-            const remark = rest.slice(4).join(" ").trim();
+            // const remark = rest.slice(4).join(" ").trim();
+            const remark = getRemarkFromMsg(lines[0], 11);
 
             const task: PinTask = {
               id,
@@ -1130,7 +1155,7 @@ class AcronPlugin extends Plugin {
               cron: cronExpr,
               chat: chatArg,
               chatId: hasChatId as any,
-              msgId: String(Math.trunc(msgId)),
+              msgId: msgIdStr,
               notify,
               pmOneSide,
               createdAt: String(Date.now()),
@@ -1159,18 +1184,13 @@ class AcronPlugin extends Plugin {
           } else if (sub === "unpin") {
             // rest: [chat, msgId, ...remark]
             const msgIdStr = rest[1];
-            let msgId = Number(msgIdStr);
-            if (!msgIdStr || Number.isNaN(msgId)) {
-              if (msg.isReply) {
-                const replied = await msg.getReplyMessage();
-                msgId = Number(replied?.id);
-              }
-            }
-            if (!msgId || Number.isNaN(msgId)) {
-              await msg.edit({ text: "请提供有效的消息ID，或回复一条消息" });
+
+            if (!msgIdStr) {
+              await msg.edit({ text: "请提供消息 ID" });
               return;
             }
-            const remark = rest.slice(2).join(" ").trim();
+            // const remark = rest.slice(2).join(" ").trim();
+            const remark = getRemarkFromMsg(lines[0], 9);
 
             const task: UnpinTask = {
               id,
@@ -1178,7 +1198,7 @@ class AcronPlugin extends Plugin {
               cron: cronExpr,
               chat: chatArg,
               chatId: hasChatId as any,
-              msgId: String(Math.trunc(msgId)),
+              msgId: msgIdStr,
               createdAt: String(Date.now()),
               remark: remark || undefined,
               display: display || undefined,
@@ -1214,7 +1234,8 @@ class AcronPlugin extends Plugin {
             }
             // 新增备注支持：从第三段起第一个参数为正则，其余合并为备注
             const regexRaw = String(rest[2]).trim();
-            const remark = rest.slice(3).join(" ").trim();
+            // const remark = rest.slice(3).join(" ").trim();
+            const remark = getRemarkFromMsg(lines[0], 10);
             if (!regexRaw) {
               await msg.edit({ text: "请提供消息正则表达式" });
               return;

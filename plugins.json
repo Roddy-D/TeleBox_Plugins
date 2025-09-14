@@ -1,99 +1,99 @@
 {
   "eat": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/eat/eat.ts?raw=true",
-    "desc": "生成\"吃掉\"表情包，支持自定义头像合成"
+    "desc": "生成带头像表情包"
   },
   "q": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/q/q.ts?raw=true",
-    "desc": "消息引用生成器，通过 QuotLyBot 制作引用图片"
+    "desc": "消息引用生成贴纸"
   },
   "yt-dlp": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/yt-dlp/yt-dlp.ts?raw=true",
-    "desc": "YouTube 视频下载工具，支持多种格式"
+    "desc": "YouTube 视频下载工具"
   },
   "gt": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/gt/gt.ts?raw=true",
-    "desc": "谷歌翻译插件，支持中英文互译"
+    "desc": "谷歌中英文互译"
   },
   "ip": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/ip/ip.ts?raw=true",
-    "desc": "IP 地址查询工具，获取地理位置和网络信息"
+    "desc": "IP 地址查询"
   },
   "acron": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/acron/acron.ts?raw=true",
     "desc": "定时发送/转发/复制/置顶/取消置顶/删除消息/执行命令"
   },
+  "music_bot": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/music_bot/music_bot.ts?raw=true",
+    "desc": "多音源音乐搜索"
+  },
   "netease": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/netease/netease.ts?raw=true",
-    "desc": "网易云音乐搜索和播放功能"
+    "desc": "网易云音乐"
   },
   "bulk_delete": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/bulk_delete/bulk_delete.ts?raw=true",
-    "desc": "批量删除消息工具，支持回复删除和数量删除"
+    "desc": "批量删除消息工具"
   },
   "aban": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/aban/aban.ts?raw=true",
-    "desc": "管理用户权限工具，支持多群组操作和永久缓存"
+    "desc": "高级封禁管理工具"
   },
   "search": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/search/search.ts?raw=true",
-    "desc": "频道消息搜索工具，支持多频道配置"
+    "desc": "频道消息搜索工具"
   },
   "music": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/music/music.ts?raw=true",
-    "desc": "YouTube 音乐搜索和下载工具"
+    "desc": "YouTube音乐"
   },
   "clean_member": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/clean_member/clean_member.ts?raw=true",
-    "desc": "群组成员清理工具，可按活跃度和时间筛选清理成员"
+    "desc": "群组成员清理工具"
   },
-  "speednext": {
-    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/speednext/speednext.ts?raw=true",
+  "speedtest": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/speedtest/speedtest.ts?raw=true",
     "desc": "网络速度测试工具"
   },
   "shift": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/shift/shift.ts?raw=true",
-    "desc": "智能消息转发系统，支持规则过滤和统计"
+    "desc": "智能消息转发系统"
   },
   "da": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/da/da.ts?raw=true",
-    "desc": "删除群内所有消息（非管理员仅删除自己的消息）"
+    "desc": "删除群内所有消息"
   },
   "dc": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/dc/dc.ts?raw=true",
-    "desc": "获取用户或群组的数据中心信息"
+    "desc": "获取实体DC"
   },
   "gpt": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/gpt/gpt.ts?raw=true",
-    "desc": "OpenAI GPT 聊天助手，支持文本对话和图像识别"
+    "desc": "OpenAI助手"
   },
   "komari": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/komari/komari.ts?raw=true",
-    "desc": "Komari 服务器监控插件，获取节点状态和资源信息"
+    "desc": "Komari 服务器监控插件"
   },
   "dig": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/dig/dig.ts?raw=true",
-    "desc": "DNS 查询工具，支持域名解析和网络诊断"
+    "desc": "DNS 查询工具"
   },
   "keyword": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/keyword/keyword.ts?raw=true",
-    "desc": "关键词自动回复系统，支持正则表达式匹配"
+    "desc": "关键词自动回复"
   },
   "lottery": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/lottery/lottery.ts?raw=true",
-    "desc": "抽奖系统，支持群组抽奖活动管理"
+    "desc": "抽奖工具"
   },
   "dme": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/dme/dme.ts?raw=true",
     "desc": "删除指定数量的自己发送的消息"
   },
-  "pm2": {
-    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/pm2/pm2.ts?raw=true",
-    "desc": "PM2 进程管理工具，支持重启和停止操作"
-  },
   "autochangename": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/autochangename/autochangename.ts?raw=true",
-    "desc": "自动定时修改用户名插件，支持时区配置和计划任务管理"
+    "desc": "自动定时修改用户名插"
   },
   "yvlu": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/yvlu/yvlu.ts?raw=true",
@@ -102,5 +102,149 @@
   "dbdj": {
     "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/dbdj/dbdj.ts?raw=true",
     "desc": "点兵点将 - 从最近的消息中随机抽取指定人数的用户"
+  },
+  "rate": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/rate/rate.ts?raw=true",
+    "desc": "货币实时汇率查询与计算"
+  },
+  "kitt": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/kitt/kitt.ts?raw=true",
+    "desc": "高级触发器: 匹配 -> 执行, 高度自定义, 逻辑自由"
+  },
+  "his": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/his/his.ts?raw=true",
+    "desc": "查看被回复者最近消息"
+  },
+  "moyu": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/moyu/moyu.ts?raw=true",
+    "desc": "摸鱼日报"
+  },
+  "clearblocked": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/clearblocked/clearblocked.ts?raw=true",
+    "desc": "批量清理已拉黑用户"
+  },
+  "gemini": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/gemini/gemini.ts?raw=true",
+    "desc": "谷歌AI助手Gemini"
+  },
+  "news": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/news/news.ts?raw=true",
+    "desc": "每日新闻插件"
+  },
+  "qr": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/qr/qr.ts?raw=true",
+    "desc": "QR 二维码插件"
+  },
+  "convert": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/convert/convert.ts?raw=true",
+    "desc": "视频转音频插件"
+  },
+  "gif": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/gif/gif.ts?raw=true",
+    "desc": "GIF与视频转贴纸插件"
+  },
+  "trace": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/trace/trace.ts?raw=true",
+    "desc": "全局追踪点赞插件"
+  },
+  "sticker_to_pic": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/sticker_to_pic/sticker_to_pic.ts?raw=true",
+    "desc": "表情转图片"
+  },
+  "weather": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/weather/weather.ts?raw=true",
+    "desc": "天气查询"
+  },
+  "atadmins": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/atadmins/atadmins.ts?raw=true",
+    "desc": "一键艾特全部管理员"
+  },
+  "pic_to_sticker": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/pic_to_sticker/pic_to_sticker.ts?raw=true",
+    "desc": "图片转表情"
+  },
+  "speedlink": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/speedlink/speedlink.ts?raw=true",
+    "desc": "对其他服务器测速"
+  },
+  "sunremove": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/sunremove/sunremove.ts?raw=true",
+    "desc": "定向批量解除封禁用户"
+  },
+  "whois": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/whois/whois.ts?raw=true",
+    "desc": "域名查询插件"
+  },
+  "getstickers": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/getstickers/getstickers.ts?raw=true",
+    "desc": "下载整个贴纸包"
+  },
+  "clear_sticker": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/clear_sticker/clear_sticker.ts?raw=true",
+    "desc": "批量删除群组内贴纸"
+  },
+  "autodel": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/autodel/autodel.ts?raw=true",
+    "desc": "定时删除消息"
+  },
+  "audio_to_voice": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/audio_to_voice/audio_to_voice.ts?raw=true",
+    "desc": "音乐转音频"
+  },
+  "copy_sticker_set": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/copy_sticker_set/copy_sticker_set.ts?raw=true",
+    "desc": "复制贴纸包"
+  },
+  "t": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/t/t.ts?raw=true",
+    "desc": "文字转语音"
+  },
+  "yinglish": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/yinglish/yinglish.ts?raw=true",
+    "desc": "淫语翻译"
+  },
+  "manage_admin": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/manage_admin/manage_admin.ts?raw=true",
+    "desc": "管理管理员"
+  },
+  "bizhi": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/bizhi/bizhi.ts?raw=true",
+    "desc": "发送一张壁纸"
+  },
+  "httpcat": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/httpcat/httpcat.ts?raw=true",
+    "desc": "发送一张http状态码主题的猫猫图片"
+  },
+  "oxost": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/oxost/oxost.ts?raw=true",
+    "desc": "回复聊天中的文件与媒体 得到一个临时的下载链接"
+  },
+  "cosplay": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/cosplay/cosplay.ts?raw=true",
+    "desc": "获取随机cos写真"
+  },
+  "crazy4": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/crazy4/crazy4.ts?raw=true",
+    "desc": "疯狂星期四文案"
+  },
+  "encode": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/encode/encode.ts?raw=true",
+    "desc": "简单的编码解码插件"
+  },
+  "ids": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/ids/ids.ts?raw=true",
+    "desc": "用户信息显示以及跳转链接"
+  },
+  "eatgif": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/eatgif/eatgif.ts?raw=true",
+    "desc": "生成\"吃掉\"动图表情包"
+  },
+  "ntp": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/ntp/ntp.ts?raw=true",
+    "desc": "NTP 时间同步插件"
+  },
+  "sticker": {
+    "url": "https://github.com/TeleBoxDev/TeleBox_Plugins/blob/main/sticker/sticker.ts?raw=true",
+    "desc": "偷表情"
   }
 }

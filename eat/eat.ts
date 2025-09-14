@@ -1,71 +1,87 @@
 import { Plugin } from "@utils/pluginBase";
 import sharp from "sharp";
-import path from "path";
-import fs from "fs";
-import download from "download";
+import axios from "axios";
 import { Api } from "telegram";
-import {
-  createDirectoryInAssets,
-  createDirectoryInTemp,
-} from "@utils/pathHelpers";
+import { CustomFile } from "telegram/client/uploads";
+import { getPrefixes } from "@utils/pluginManager";
 
-const EAT_ASSET_PATH = createDirectoryInAssets("me");
-const EAT_TEMP_PATH = createDirectoryInTemp("eat");
-const YOU_AVATAR_PATH = path.join(EAT_TEMP_PATH, "you.png");
-const ME_AVATAR_PATH = path.join(EAT_TEMP_PATH, "me.png");
-const OUT_STICKER_PATH = path.join(EAT_TEMP_PATH, "output.webp");
+const prefixes = getPrefixes();
+const mainPrefix = prefixes[0];
+// 使用内存缓存，避免任何文件写入
+const assetBufferCache = new Map<string, Buffer>();
 
 interface RoleConfig {
   x: number;
   y: number;
   mask: string;
   brightness?: number;
+  flip?: boolean;
 }
 
 interface EntryConfig {
   name: string;
   url: string;
   me?: RoleConfig; // 少部分有两人互动，比如 tc
-  you: RoleConfig;
+  you?: RoleConfig;
 }
 
 interface EatConfig {
   [key: string]: EntryConfig;
 }
 
-let config: EatConfig;
+let config: EatConfig = {};
 
+// + 新增此行：用于存储根据meta配置拼接好的资源基础URL
+let resourceBaseUrl = "";
+
+// + 修改此行：请将URL替换为您新配置文件的【实际Raw地址】
 let baseConfigURL =
-  "https://github.com/TeleBoxDev/TeleBox_Plugins/raw/main/eat/config.json";
+  "https://raw.githubusercontent.com/TeleBoxOrg/TeleBox_Plugins/refs/heads/main/eat/config.json";
+function resolveResourceUrl(path: string): string {
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    return path;
+  }
+  return `${resourceBaseUrl}/${path}`;
+}
+// eat.ts (用这个版本替换整个 loadConfigResource 函数)
 
 async function loadConfigResource(url: string, forceUpdate = false) {
-  const filePath = await assetPathFor(url);
-
-  // 如果有缓存且不强制更新，直接使用缓存
-  if (!forceUpdate && fs.existsSync(filePath)) {
-    try {
-      const content = fs.readFileSync(filePath, "utf-8");
-      config = JSON.parse(content);
-      return;
-    } catch (error) {
-      console.error("缓存文件损坏，尝试从远程下载:", error);
+  const parseAndSetConfig = (content: string) => {
+    const fullConfig = JSON.parse(content);
+    if (!fullConfig.meta || !fullConfig.resources) {
+      throw new Error("配置文件格式错误，缺少 meta 或 resources 字段");
     }
+
+    const meta = fullConfig.meta;
+    const { repo_owner, repo_name, branch, base_url_template } = meta;
+
+    if (!repo_owner || !repo_name || !branch || !base_url_template) {
+      throw new Error(
+        "meta配置不完整, 缺少 repo_owner, repo_name, branch, 或 base_url_template 之一"
+      );
+    }
+
+    // 动态替换模板中的占位符
+    resourceBaseUrl = base_url_template
+      .replace("${repo_owner}", repo_owner)
+      .replace("${repo_name}", repo_name)
+      .replace("${branch}", branch);
+
+    config = fullConfig.resources;
+    console.log(
+      `配置加载成功，当前分支: ${branch}, 资源基础URL: ${resourceBaseUrl}`
+    );
+  };
+
+  // 若已有配置且不强制更新，直接使用内存中的配置
+  if (!forceUpdate && Object.keys(config || {}).length > 0) {
+    return;
   }
 
-  // 下载最新配置
-  try {
-    await download(url, EAT_ASSET_PATH);
-    const content = fs.readFileSync(filePath, "utf-8");
-    config = JSON.parse(content);
-  } catch (error) {
-    console.error("从远程加载配置失败，尝试使用本地缓存:", error);
-    if (fs.existsSync(filePath)) {
-      const content = fs.readFileSync(filePath, "utf-8");
-      config = JSON.parse(content);
-    } else {
-      throw new Error("无可用配置，远程和本地缓存均不可用");
-    }
-  }
+  // 下载最新配置（仅内存，不落地）
+  const response = await axios.get(url, { responseType: "arraybuffer" });
+  const content = Buffer.from(response.data).toString("utf-8");
+  parseAndSetConfig(content);
 }
 
 // 初始加载（使用缓存优先）
@@ -91,29 +107,36 @@ function getRandomEntry(): EntryConfig {
   return values[randomIndex];
 }
 
-async function assetPathFor(url: string): Promise<string> {
-  const pathname = new URL(url).pathname;
-  const filename = path.basename(pathname);
-  const filePath = path.join(EAT_ASSET_PATH, filename);
+async function getAssetBuffer(url: string): Promise<Buffer> {
+  const absoluteUrl = resolveResourceUrl(url);
+  const cached = assetBufferCache.get(absoluteUrl);
+  if (cached) return cached;
 
-  if (!fs.existsSync(filePath)) {
-    await download(url, EAT_ASSET_PATH);
-    return filePath;
-  }
-  return filePath;
+  const response = await axios.get(absoluteUrl, {
+    responseType: "arraybuffer",
+  });
+  const buf = Buffer.from(response.data);
+  assetBufferCache.set(absoluteUrl, buf);
+  return buf;
 }
 
 async function iconMaskedFor(params: {
   role: RoleConfig;
-  avatar: string;
+  avatar: Buffer;
 }): Promise<sharp.OverlayOptions> {
   const { role, avatar } = params;
 
-  const maskSharp = sharp(await assetPathFor(role.mask)).ensureAlpha();
-  const { width, height } = await maskSharp.metadata(); // 只读一次 metadata
+  const maskSharp = sharp(await getAssetBuffer(role.mask)).ensureAlpha();
+  const { width, height } = await maskSharp.metadata();
+
+  let iconSharp = sharp(avatar).resize(width, height);
+
+  if (role.flip) {
+    iconSharp = iconSharp.flip(); // 如果 role.flip 为真，就上下颠倒
+  }
 
   const [iconBuffer, alphaMask] = await Promise.all([
-    sharp(avatar).resize(width, height).toBuffer(),
+    iconSharp.toBuffer(),
     maskSharp.clone().extractChannel("alpha").toBuffer(),
   ]);
 
@@ -131,39 +154,43 @@ async function iconMaskedFor(params: {
   };
 }
 
-async function downloadProfilePhoto(msg: Api.Message): Promise<Boolean> {
+async function downloadProfilePhoto(msg: Api.Message): Promise<Buffer | null> {
   const replied = await msg.getReplyMessage();
-  const fromId = replied?.fromId;
+  const fromId = replied?.senderId;
   if (!fromId) {
     await msg.edit({ text: "无法获取对方头像" });
-    return false;
+    return null;
   }
-  await msg.client?.downloadProfilePhoto(fromId, {
-    outputFile: YOU_AVATAR_PATH,
-  });
-  return true;
+
+  const buf = (await msg.client?.downloadProfilePhoto(fromId, {
+    isBig: false,
+  })) as Buffer | undefined;
+  if (!buf) return null;
+  return buf;
 }
 
-async function downloadMedia(msg: Api.Message): Promise<Boolean> {
+async function downloadMedia(msg: Api.Message): Promise<Buffer | null> {
   const replied = await msg.getReplyMessage();
   if (!replied) {
     await msg.edit({ text: "请回复一条图片消息" });
-    return false;
+    return null;
   }
   if (!replied.media) {
     await msg.edit({ text: "请回复一条图片消息" });
-    return false;
+    return null;
   }
-  await msg.client?.downloadMedia(replied, {
-    outputFile: YOU_AVATAR_PATH,
-  });
-  return true;
+  const mimeType = (replied.media as any).document?.mimeType;
+  const buf = (await msg.client?.downloadMedia(replied, {
+    thumb: ["video/webm"].includes(mimeType) ? 0 : 1,
+  })) as Buffer | undefined;
+  if (!buf) return null;
+  return buf;
 }
 
 async function downloadAvatar(
   msg: Api.Message,
   isEat2: Boolean
-): Promise<Boolean> {
+): Promise<Buffer | null> {
   return isEat2 ? await downloadMedia(msg) : await downloadProfilePhoto(msg);
 }
 
@@ -175,14 +202,19 @@ async function compositeWithEntryConfig(parmas: {
 }): Promise<void> {
   const { entry, msg, isEat2, trigger } = parmas;
 
-  const basePath = await assetPathFor(entry.url);
+  const baseBuffer = await getAssetBuffer(entry.url);
 
-  const downloadResult = await downloadAvatar(msg, isEat2);
-  if (!downloadResult) return;
+  const youAvatarBuffer = await downloadAvatar(msg, isEat2);
+  if (!youAvatarBuffer) return;
 
-  let composite: sharp.OverlayOptions[] = [
-    await iconMaskedFor({ role: entry.you, avatar: YOU_AVATAR_PATH }),
-  ];
+  let composite: sharp.OverlayOptions[] = [];
+  if (entry.you) {
+    const iconMasked = await iconMaskedFor({
+      role: entry.you,
+      avatar: youAvatarBuffer,
+    });
+    composite.push(iconMasked);
+  }
 
   // 如果有两人互动
   if (entry.me) {
@@ -191,23 +223,29 @@ async function compositeWithEntryConfig(parmas: {
       await msg.edit({ text: "无法获取自己的头像" });
       return;
     }
-    await msg.client?.downloadProfilePhoto(meId, {
-      outputFile: ME_AVATAR_PATH,
-    });
-    let iconMasked = await iconMaskedFor({
+    const meAvatarBuffer = (await msg.client?.downloadProfilePhoto(meId, {
+      isBig: false,
+    })) as Buffer | undefined;
+    if (!meAvatarBuffer) {
+      await msg.edit({ text: "无法获取自己的头像" });
+      return;
+    }
+    const iconMasked = await iconMaskedFor({
       role: entry.me,
-      avatar: ME_AVATAR_PATH,
+      avatar: meAvatarBuffer,
     });
     composite.push(iconMasked);
   }
 
-  await sharp(basePath)
+  const outBuffer = await sharp(baseBuffer)
     .composite(composite)
     .webp({ quality: 100 })
-    .toFile(OUT_STICKER_PATH);
+    .toBuffer();
 
+  // 使用 CustomFile 指定文件名与大小，避免落地
+  const file = new CustomFile("output.webp", outBuffer.length, "", outBuffer);
   await msg.client?.sendFile(msg.peerId, {
-    file: OUT_STICKER_PATH,
+    file,
     replyTo: await msg.getReplyMessage(),
   });
 }
@@ -216,10 +254,10 @@ async function sendSticker(params: {
   entry: EntryConfig;
   msg: Api.Message;
   trigger?: Api.Message;
+  isEat2: boolean;
 }) {
-  const { entry, msg, trigger } = params;
+  const { entry, msg, trigger, isEat2 } = params;
   const cmd = msg.message.slice(1).split(" ")[0];
-  const isEat2 = cmd === "eat2";
   await msg.edit({ text: `正在生成 ${entry.name} 表情包···` });
   await compositeWithEntryConfig({ entry, msg, isEat2, trigger });
   await msg.delete();
@@ -252,7 +290,11 @@ async function handleSetCommand(params: {
   });
 }
 
-const fn = async (msg: Api.Message, trigger?: Api.Message) => {
+const fn = async (
+  msg: Api.Message,
+  trigger?: Api.Message,
+  isEat2: boolean = false
+) => {
   const [, ...args] = msg.message.split(" ");
 
   if (!msg.isReply) {
@@ -274,7 +316,7 @@ const fn = async (msg: Api.Message, trigger?: Api.Message) => {
   if (args.length == 0) {
     // 说明随机情况
     const entry = getRandomEntry();
-    await sendSticker({ entry, msg, trigger });
+    await sendSticker({ entry, msg, trigger, isEat2 });
   } else {
     const stickerName = args[0];
     const entrys = Object.keys(config);
@@ -289,7 +331,7 @@ const fn = async (msg: Api.Message, trigger?: Api.Message) => {
       return;
     }
     let entry = config[stickerName];
-    await sendSticker({ entry, msg, trigger });
+    await sendSticker({ entry, msg, trigger, isEat2 });
   }
 };
 
@@ -298,13 +340,23 @@ const help_text =
   `• eat - 获取表情包列表（优先使用缓存）\n` +
   `• eat set [url] - 强制更新配置（覆盖缓存）\n` +
   `• 回复消息 + eat <名称> - 发送指定表情包\n` +
-  `• 回复消息 + eat - 随机发送表情包`;
+  `• 回复消息 + eat - 随机发送表情包\n\n` +
+  `若想实现定时更新表情包配置, 可安装并使用 <code>${mainPrefix}tpm i acron</code>
+每天2点自动更新 <code>eat</code> 的表情包配置(调用 <code>${mainPrefix}eat set</code> 命令)
+
+<pre>${mainPrefix}acron cmd 0 0 2 * * * me 定时更新表情包
+${mainPrefix}eat set</pre>
+`;
 
 class EatPlugin extends Plugin {
   description: string = `${help_text}`;
   cmdHandlers: Record<string, (msg: Api.Message) => Promise<void>> = {
-    eat: fn,
-    eat2: fn,
+    eat: async (msg, trigger?: Api.Message) => {
+      await fn(msg, trigger);
+    },
+    eat2: async (msg: Api.Message, trigger?: Api.Message) => {
+      await fn(msg, trigger, true);
+    },
   };
 }
 

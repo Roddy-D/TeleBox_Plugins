@@ -5,13 +5,25 @@
 import { Plugin } from "@utils/pluginBase";
 import { Api, TelegramClient } from "telegram";
 import { getGlobalClient } from "@utils/globalClient";
+import { getPrefixes } from "@utils/pluginManager";
 import { createDirectoryInAssets } from "@utils/pathHelpers";
+import { JSONFilePreset } from "lowdb/node";
 import * as fs from "fs";
 import * as path from "path";
 import { promisify } from "util";
 
 const sleep = promisify(setTimeout);
 const CACHE_DIR = createDirectoryInAssets("clean_member_cache");
+
+// 必需工具函数
+const htmlEscape = (text: string): string => 
+  text.replace(/[&<>"']/g, m => ({ 
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', 
+    '"': '&quot;', "'": '&#x27;' 
+  }[m] || m));
+
+const prefixes = getPrefixes();
+const mainPrefix = prefixes[0];
 
 interface UserInfo {
   id: number;
@@ -167,24 +179,24 @@ async function checkAdminPermissions(msg: Api.Message): Promise<boolean> {
   */
 }
 
-async function kickChatMember(
+async function removeChatMember(
   client: TelegramClient,
   channelEntity: any,
   userId: number
 ): Promise<void> {
   try {
-    const untilDate = Math.floor(Date.now() / 1000) + 60;
     const userEntity = await client.getInputEntity(userId);
 
-    console.log(`正在清理用户: ${userId}`);
+    console.log(`正在移出用户: ${userId}`);
 
+    // 第一步：先封禁用户（踢出群组）
     await client.invoke(
       new Api.channels.EditBanned({
         channel: channelEntity,
         participant: userEntity,
         bannedRights: new Api.ChatBannedRights({
-          untilDate,
-          viewMessages: true,
+          untilDate: Math.floor(Date.now() / 1000) + 60,  // 临时封禁60秒
+          viewMessages: true,  // 禁止查看消息
           sendMessages: true,
           sendMedia: true,
           sendStickers: true,
@@ -199,15 +211,17 @@ async function kickChatMember(
       })
     );
 
-    await sleep(500);
+    // 等待较长时间确保踢出生效，避免解封失败
+    await sleep(2000 + Math.random() * 1000);  // 等待2-3秒
 
+    // 第二步：解封（允许用户重新加入）
     await client.invoke(
       new Api.channels.EditBanned({
         channel: channelEntity,
         participant: userEntity,
         bannedRights: new Api.ChatBannedRights({
-          untilDate: 0,
-          viewMessages: false,
+          untilDate: 0,  // 0 表示解除所有限制
+          viewMessages: false,  // 恢复所有权限
           sendMessages: false,
           sendMedia: false,
           sendStickers: false,
@@ -221,13 +235,15 @@ async function kickChatMember(
         }),
       })
     );
+    
+    console.log(`用户 ${userId} 已移出并解封，可重新加入`);
   } catch (error: any) {
-    console.error(`清理用户 ${userId} 失败:`, error);
+    console.error(`移出用户 ${userId} 失败:`, error);
     if (error.errorMessage && error.errorMessage.includes("FLOOD_WAIT")) {
       const seconds = parseInt(error.errorMessage.match(/\d+/)?.[0] || "60");
       console.log(`遇到频率限制，等待 ${seconds} 秒后重试`);
       await sleep(seconds * 1000);
-      await kickChatMember(client, channelEntity, userId);
+      await removeChatMember(client, channelEntity, userId);
     } else if (
       error.errorMessage &&
       error.errorMessage.includes("USER_NOT_PARTICIPANT")
@@ -235,6 +251,12 @@ async function kickChatMember(
       console.log(`用户 ${userId} 已不在群组中`);
       // 用户已经不在群组中，视为成功
       return;
+    } else if (
+      error.errorMessage &&
+      error.errorMessage.includes("CHAT_ADMIN_REQUIRED")
+    ) {
+      console.log(`无权限移出用户 ${userId}（可能是管理员）`);
+      throw error;
     } else {
       // 其他错误，抛出以便上层处理
       throw error;
@@ -267,27 +289,57 @@ function getLastOnlineDays(user: Api.User): number | null {
   return null;
 }
 
-async function getAllParticipants(
-  client: TelegramClient,
-  chatEntity: any,
-  statusCallback?: (message: string) => Promise<void>
-): Promise<{ visibleUsers: Api.User[]; estimatedTotal: number }> {
-  try {
-    const allUsers: Api.User[] = [];
-    let offset = 0;
-    const limit = 200; // Telegram API 限制
-    let hasMore = true;
+// 流式处理接口
+interface StreamProcessOptions {
+  client: TelegramClient;
+  chatEntity: any;
+  mode: string;
+  day: number;
+  adminIds: Set<number>;
+  onlySearch: boolean;
+  maxRemove?: number;  // 移除人数上限
+  statusCallback?: (message: string, forceUpdate?: boolean) => Promise<void>;
+  modeNames: { [key: string]: string };
+}
 
+interface StreamProcessResult {
+  totalScanned: number;
+  totalFound: number;
+  totalRemoved: number;
+  users: UserInfo[];
+}
+
+// 流式处理：边扫描边处理
+async function streamProcessMembers(
+  options: StreamProcessOptions
+): Promise<StreamProcessResult> {
+  const { client, chatEntity, mode, day, adminIds, onlySearch, maxRemove, statusCallback, modeNames } = options;
+  const result: StreamProcessResult = {
+    totalScanned: 0,
+    totalFound: 0,
+    totalRemoved: 0,
+    users: []
+  };
+
+  let offset = 0;
+  const limit = 200; // Telegram API 限制
+  let hasMore = true;
+  let batchNumber = 0;
+
+  try {
     while (hasMore) {
+      batchNumber++;
+      
+      // 获取一批用户
       if (statusCallback) {
+        // 每批次强制更新
         await statusCallback(
-          `📥 获取成员数据 (${allUsers.length}/${
-            Math.floor(offset / limit) + 1
-          }批)`
+          `🔍 扫描第 ${batchNumber} 批 (${modeNames[mode]}) | 已扫描: ${result.totalScanned} | 已找到: ${result.totalFound}${!onlySearch ? ` | 已移出: ${result.totalRemoved}` : ''}`,
+          true
         );
       }
 
-      const result = await client.invoke(
+      const participantsResult = await client.invoke(
         new Api.channels.GetParticipants({
           channel: chatEntity,
           filter: new Api.ChannelParticipantsRecent(),
@@ -297,375 +349,271 @@ async function getAllParticipants(
         })
       );
 
-      console.log(
-        `获取第${Math.floor(offset / limit) + 1}批: ${
-          "users" in result ? result.users.length : 0
-        }人, 总计: ${
-          allUsers.length + ("users" in result ? result.users.length : 0)
-        }人`
-      );
+      if ("users" in participantsResult && participantsResult.users.length > 0) {
+        const users = participantsResult.users as Api.User[];
+        result.totalScanned += users.length;
 
-      if ("users" in result && result.users.length > 0) {
-        const users = result.users as Api.User[];
-        allUsers.push(...users);
+        // 流式处理这批用户
+        for (const user of users) {
+          const uid = Number(user.id);
+          
+          // 跳过管理员
+          if (adminIds.has(uid)) continue;
 
-        // 如果返回的用户数少于limit，说明已经获取完所有用户
+          // 检查是否符合条件
+          let shouldProcess = false;
+
+          if (mode === "1") {
+            // 按未上线时间
+            const lastOnlineDays = getLastOnlineDays(user);
+            if (lastOnlineDays !== null && lastOnlineDays > day) {
+              shouldProcess = true;
+            }
+          } else if (mode === "2") {
+            // 按未发言时间
+            try {
+              const userEntity = await client.getInputEntity(uid);
+              const messages = await client.getMessages(chatEntity, {
+                limit: 1,
+                fromUser: userEntity,
+              });
+
+              if (messages && messages.length > 0) {
+                const lastMessageDate = messages[0].date;
+                const daysDiff = Math.floor(
+                  (Date.now() - lastMessageDate * 1000) / (1000 * 60 * 60 * 24)
+                );
+                if (daysDiff > day) {
+                  shouldProcess = true;
+                }
+              } else {
+                // 从未发言
+                shouldProcess = true;
+              }
+            } catch (error) {
+              // 获取消息失败时跳过
+              continue;
+            }
+          } else if (mode === "3") {
+            // 按发言数
+            try {
+              const userEntity = await client.getInputEntity(uid);
+              const messages = await client.getMessages(chatEntity, {
+                limit: day + 1,
+                fromUser: userEntity,
+              });
+
+              if (messages.length < day) {
+                shouldProcess = true;
+              }
+            } catch (error) {
+              continue;
+            }
+          } else if (mode === "4") {
+            // 已注销账户
+            if (user.deleted) {
+              shouldProcess = true;
+            }
+          } else if (mode === "5") {
+            // 所有普通成员
+            shouldProcess = true;
+          }
+
+          if (shouldProcess) {
+            result.totalFound++;
+            
+            // 记录用户信息
+            const userInfo: UserInfo = {
+              id: uid,
+              username: user.username || "",
+              first_name: user.firstName || "",
+              last_name: user.lastName || "",
+              is_deleted: user.deleted || false,
+              last_online: null,
+            };
+
+            if (user.status) {
+              if (user.status instanceof Api.UserStatusOffline && user.status.wasOnline) {
+                userInfo.last_online = new Date(Number(user.status.wasOnline) * 1000).toISOString();
+              } else if (user.status instanceof Api.UserStatusOnline) {
+                userInfo.last_online = "online";
+              } else if (user.status instanceof Api.UserStatusRecently) {
+                userInfo.last_online = "recently";
+              } else if (user.status instanceof Api.UserStatusLastWeek) {
+                userInfo.last_online = "last_week";
+              } else if (user.status instanceof Api.UserStatusLastMonth) {
+                userInfo.last_online = "last_month";
+              }
+            }
+
+            result.users.push(userInfo);
+
+            // 如果不是仅搜索模式，立即移出用户（流式处理核心）
+            if (!onlySearch) {
+              // 检查是否达到移除上限
+              if (maxRemove && result.totalRemoved >= maxRemove) {
+                console.log(`已达到移除上限 ${maxRemove} 人，停止处理`);
+                hasMore = false;
+                break;
+              }
+              
+              try {
+                await removeChatMember(client, chatEntity, uid);
+                result.totalRemoved++;
+                
+                // 实时更新进度（每5个用户更新一次）
+                if (result.totalRemoved % 5 === 0 && statusCallback) {
+                  const limitInfo = maxRemove ? ` / 上限: ${maxRemove}` : '';
+                  await statusCallback(
+                    `⚡ 流式处理中 (${modeNames[mode]}) | 扫描: ${result.totalScanned} | 找到: ${result.totalFound} | 已移出: ${result.totalRemoved}${limitInfo}`,
+                    false // 不强制更新，受频率限制
+                  );
+                }
+                
+                // 添加延迟避免频率限制
+                await sleep(1000 + Math.random() * 500);
+                
+                // 再次检查是否达到上限
+                if (maxRemove && result.totalRemoved >= maxRemove) {
+                  console.log(`已达到移除上限 ${maxRemove} 人，停止处理`);
+                  hasMore = false;
+                  break;
+                }
+              } catch (error: any) {
+                console.error(`Failed to remove user ${uid}:`, error);
+                // 继续处理下一个用户
+              }
+            }
+          }
+        }
+
+        // 判断是否还有更多用户
         if (users.length < limit) {
           hasMore = false;
-          console.log(
-            `API返回用户数(${users.length})少于请求数(${limit})，判断为已获取完所有可访问用户`
-          );
+          console.log(`批次 ${batchNumber}: 获取 ${users.length} 人，少于限制 ${limit}，结束扫描`);
         } else {
           offset += limit;
-          // 添加延迟避免触发频率限制
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          // 批次间延迟
+          await sleep(100);
         }
       } else {
         hasMore = false;
       }
 
-      // 安全检查：避免无限循环
+      // 安全限制
       if (offset > 50000) {
-        // 最多获取50000个用户
-        console.warn("达到最大用户获取限制，停止获取");
+        console.warn("达到最大扫描限制 50000 人");
         break;
       }
     }
 
     if (statusCallback) {
-      await statusCallback(`✅ 获取完成: ${allUsers.length} 名成员`);
+      if (onlySearch) {
+        await statusCallback(
+          `✅ 搜索完成 (${modeNames[mode]}) | 扫描: ${result.totalScanned} 人 | 找到: ${result.totalFound} 人`,
+          true // 强制更新最终结果
+        );
+      } else {
+        await statusCallback(
+          `✅ 清理完成 (${modeNames[mode]}) | 扫描: ${result.totalScanned} 人 | 移出: ${result.totalRemoved}/${result.totalFound} 人`,
+          true // 强制更新最终结果
+        );
+      }
     }
 
-    return { visibleUsers: allUsers, estimatedTotal: allUsers.length };
+    return result;
   } catch (error) {
-    console.error("Failed to get participants:", error);
+    console.error("Stream process error:", error);
     if (statusCallback) {
-      await statusCallback(`❌ 获取成员失败: ${error}`);
+      await statusCallback(`❌ 处理失败: ${error}`, true);
     }
-    return { visibleUsers: [], estimatedTotal: 0 };
-  }
-}
-
-async function filterTargetUsers(
-  participants: Api.User[],
-  client: TelegramClient,
-  chatEntity: any,
-  mode: string,
-  day: number,
-  adminIds: Set<number>,
-  statusCallback?: (message: string) => Promise<void>
-): Promise<Api.User[]> {
-  const targetUsers: Api.User[] = [];
-  let processedCount = 0;
-  const totalCount = participants.length;
-
-  for (const participant of participants) {
-    processedCount++;
-
-    // 对于大群组，减少状态更新频率以提高性能
-    const updateInterval = totalCount > 1000 ? 50 : 10;
-    if (statusCallback && processedCount % updateInterval === 0) {
-      const progress = ((processedCount / totalCount) * 100).toFixed(1);
-      await statusCallback(
-        `🔍 分析中: ${processedCount}/${totalCount} (${progress}%) | 找到: ${targetUsers.length}`
-      );
-    }
-    const uid = Number(participant.id);
-
-    if (adminIds.has(uid)) continue;
-
-    let tryTarget = false;
-
-    if (mode === "1") {
-      // 按未上线时间清理
-      const lastOnlineDays = getLastOnlineDays(participant);
-      if (lastOnlineDays !== null && lastOnlineDays > day) {
-        tryTarget = true;
-      }
-    } else if (mode === "2") {
-      // 按未发言时间清理
-      try {
-        const userEntity = await client.getInputEntity(uid);
-        const messages = await client.getMessages(chatEntity, {
-          limit: 1,
-          fromUser: userEntity,
-        });
-
-        if (messages && messages.length > 0) {
-          const lastMessageDate = messages[0].date;
-          const daysDiff = Math.floor(
-            (Date.now() - lastMessageDate * 1000) / (1000 * 60 * 60 * 24)
-          );
-          if (daysDiff > day) {
-            tryTarget = true;
-          }
-        } else {
-          // 从未发言
-          tryTarget = true;
-        }
-      } catch (error) {
-        // 获取消息失败时跳过
-        continue;
-      }
-    } else if (mode === "3") {
-      // 按发言数清理
-      try {
-        const userEntity = await client.getInputEntity(uid);
-        const messages = await client.getMessages(chatEntity, {
-          limit: day + 1,
-          fromUser: userEntity,
-        });
-
-        if (messages.length < day) {
-          tryTarget = true;
-        }
-      } catch (error) {
-        // 获取消息失败时跳过
-        continue;
-      }
-    } else if (mode === "4") {
-      // 清理已注销账户
-      if (participant.deleted) {
-        tryTarget = true;
-      }
-    } else if (mode === "5") {
-      // 清理所有普通成员
-      tryTarget = true;
-    }
-
-    if (tryTarget) {
-      targetUsers.push(participant);
-    }
-  }
-
-  return targetUsers;
-}
-
-async function getTargetUsersCached(
-  client: TelegramClient,
-  chatId: any,
-  mode: string,
-  day: number,
-  chatTitle: string = "",
-  statusCallback?: (message: string) => Promise<void>
-): Promise<CacheData> {
-  try {
-    // 添加调试信息
-    console.log("chatId type:", typeof chatId);
-    console.log("chatId value:", chatId);
-    console.log(
-      "chatId keys:",
-      typeof chatId === "object" ? Object.keys(chatId) : "not object"
-    );
-
-    // 从 chatId 中提取数字ID用于缓存
-    let numericChatId: number;
-    if (typeof chatId === "object" && chatId.userId) {
-      numericChatId = Number(chatId.userId);
-      console.log("Using userId:", numericChatId);
-    } else if (typeof chatId === "object" && chatId.chatId) {
-      numericChatId = Number(chatId.chatId);
-      console.log("Using chatId:", numericChatId);
-    } else if (typeof chatId === "object" && chatId.channelId) {
-      numericChatId = Number(chatId.channelId);
-      console.log("Using channelId:", numericChatId);
-    } else {
-      numericChatId = Number(chatId);
-      console.log("Using direct conversion:", numericChatId);
-    }
-
-    if (isNaN(numericChatId)) {
-      console.error("Failed to extract numeric chat ID, using fallback");
-      numericChatId = 0;
-    }
-
-    const cached = getFromCache(numericChatId, mode, day);
-    if (cached) {
-      if (statusCallback) {
-        await statusCallback(`📋 使用缓存: ${cached.total_found} 名用户`);
-      }
-      return cached;
-    }
-
-    if (statusCallback) {
-      await statusCallback(`🔍 搜索用户中...`);
-    }
-
-    // 尝试不同方式获取 channel entity
-    let channelEntity;
-    try {
-      // 方法1：直接使用 chatId
-      channelEntity = chatId;
-      console.log("Trying direct chatId as entity");
-
-      // 先测试是否能获取参与者
-      await client.invoke(
-        new Api.channels.GetParticipants({
-          channel: channelEntity,
-          filter: new Api.ChannelParticipantsRecent(),
-          offset: 0,
-          limit: 1,
-          hash: 0 as any,
-        })
-      );
-
-      console.log("Direct chatId works");
-    } catch (error) {
-      console.log("Direct chatId failed, trying getInputEntity");
-      try {
-        // 方法2：尝试从数字ID获取entity
-        if (numericChatId && numericChatId !== 0) {
-          channelEntity = await client.getInputEntity(numericChatId);
-          console.log("getInputEntity with numeric ID works");
-        } else {
-          throw new Error("No valid numeric ID");
-        }
-      } catch (error2) {
-        console.error("Both methods failed:", error, error2);
-        throw new Error("Cannot get channel entity");
-      }
-    }
-
-    if (statusCallback) {
-      await statusCallback(`👥 获取成员列表中...`);
-    }
-
-    const participantsResult = await getAllParticipants(
-      client,
-      channelEntity,
-      statusCallback
-    );
-    const participants = participantsResult.visibleUsers;
-
-    if (participants.length === 0) {
-      throw new Error("无法获取群组成员列表，请检查机器人权限");
-    }
-
-    if (statusCallback) {
-      await statusCallback(`👤 分析权限: ${participants.length} 名成员`);
-    }
-
-    const adminIds = new Set<number>();
-    try {
-      const result = await client.invoke(
-        new Api.channels.GetParticipants({
-          channel: channelEntity,
-          filter: new Api.ChannelParticipantsAdmins(),
-          offset: 0,
-          limit: 200,
-          hash: 0 as any,
-        })
-      );
-
-      if ("users" in result) {
-        const admins = result.users as Api.User[];
-        for (const admin of admins) {
-          adminIds.add(Number(admin.id));
-        }
-      }
-    } catch {
-      // Ignore errors
-    }
-
-    if (statusCallback) {
-      const modeNames: { [key: string]: string } = {
-        "1": `未上线超过${day}天`,
-        "2": `未发言超过${day}天`,
-        "3": `发言少于${day}条`,
-        "4": "已注销账户",
-        "5": "所有普通成员",
-      };
-      await statusCallback(
-        `🎯 筛选: ${modeNames[mode]} | 成员: ${participants.length} | 管理员: ${adminIds.size}`
-      );
-    }
-
-    const targetUsers = await filterTargetUsers(
-      participants,
-      client,
-      channelEntity,
-      mode,
-      day,
-      adminIds,
-      statusCallback
-    );
-
-    const cacheData: CacheData = {
-      chat_id: numericChatId,
-      chat_title: chatTitle,
-      mode,
-      day,
-      search_time: new Date().toISOString(),
-      total_found: targetUsers.length,
-      users: [],
-    };
-
-    for (const user of targetUsers) {
-      const userInfo: UserInfo = {
-        id: Number(user.id),
-        username: user.username || "",
-        first_name: user.firstName || "",
-        last_name: user.lastName || "",
-        is_deleted: user.deleted || false,
-        last_online: null,
-      };
-
-      if (user.status) {
-        if (
-          user.status instanceof Api.UserStatusOffline &&
-          user.status.wasOnline
-        ) {
-          userInfo.last_online = new Date(
-            Number(user.status.wasOnline) * 1000
-          ).toISOString();
-        } else if (user.status instanceof Api.UserStatusOnline) {
-          userInfo.last_online = "online";
-        } else if (user.status instanceof Api.UserStatusRecently) {
-          userInfo.last_online = "recently";
-        } else if (user.status instanceof Api.UserStatusLastWeek) {
-          userInfo.last_online = "last_week";
-        } else if (user.status instanceof Api.UserStatusLastMonth) {
-          userInfo.last_online = "last_month";
-        }
-      }
-
-      cacheData.users.push(userInfo);
-    }
-
-    try {
-      await generateReport(cacheData);
-    } catch (error) {
-      console.error("Failed to generate CSV report:", error);
-    }
-
-    setCache(numericChatId, mode, day, cacheData);
-    return cacheData;
-  } catch (error) {
-    console.error("Error in getTargetUsersCached:", error);
     throw error;
   }
 }
 
+// 获取管理员列表
+async function getAdminIds(
+  client: TelegramClient,
+  chatEntity: any
+): Promise<Set<number>> {
+  const adminIds = new Set<number>();
+  try {
+    const result = await client.invoke(
+      new Api.channels.GetParticipants({
+        channel: chatEntity,
+        filter: new Api.ChannelParticipantsAdmins(),
+        offset: 0,
+        limit: 200,
+        hash: 0 as any,
+      })
+    );
+
+    if ("users" in result) {
+      const admins = result.users as Api.User[];
+      for (const admin of admins) {
+        adminIds.add(Number(admin.id));
+      }
+    }
+  } catch (error) {
+    console.error("Failed to get admins:", error);
+  }
+  return adminIds;
+}
+
+// 简化的缓存检查函数
+async function checkCache(
+  chatId: number,
+  mode: string,
+  day: number,
+  statusCallback?: (message: string, forceUpdate?: boolean) => Promise<void>
+): Promise<CacheData | null> {
+  const cached = getFromCache(chatId, mode, day);
+  if (cached && statusCallback) {
+    await statusCallback(`📋 使用缓存: ${cached.total_found} 名用户`, true);
+  }
+  return cached;
+}
+
 function getHelpText(): string {
-  return `<b>🧹 群成员清理工具</b>
+  return `<b>🧹 群成员清理工具 Pro</b>
 
-<b>用法:</b> <code>clean_member &lt;模式&gt; [参数] [search]</code>
 
-<b>模式:</b>
-<code>1</code> - 按未上线天数 | <code>2</code> - 按未发言天数
-<code>3</code> - 按发言数量 | <code>4</code> - 已注销账户
-<code>5</code> - 所有成员 ⚠️
+<b>🔧 使用格式:</b>
+<code>${mainPrefix}clean_member &lt;模式&gt; &lt;参数&gt; [limit:数量] [search]</code>
 
-<b>示例:</b>
-<code>clean_member 1 7 search</code> - 查找7天未上线
-<code>clean_member 2 30</code> - 清理30天未发言
-<code>clean_member 4</code> - 清理已注销账户
+<b>📋 清理模式:</b>
+┌─────────────────────────
+│ <b>1</b> &lt;天数&gt; → 未上线超过N天
+│ <b>2</b> &lt;天数&gt; → 未发言超过N天  
+│ <b>3</b> &lt;数量&gt; → 发言少于N条
+│ <b>4</b> → 已注销账户
+│ <b>5</b> → 所有普通成员 ⚠️
+└─────────────────────────
 
-<b>特性:</b> 24h缓存 | CSV报告 | 进度显示
-<b>安全:</b> 保护管理员 | 分批处理 | 自动重试`;
+<b>⚙️ 可选参数:</b>
+• <code>limit:100</code> - 限制最多移出100人
+• <code>search</code> - 仅搜索不移出（预览模式）
+
+<b>💡 使用示例:</b>
+• <code>${mainPrefix}clean_member 1 30 search</code>
+  └ 搜索30天未上线的用户（预览）
+• <code>${mainPrefix}clean_member 2 60 limit:50</code>
+  └ 移出60天未发言，最多50人
+• <code>${mainPrefix}clean_member 4</code>
+  └ 移出所有已注销账户
+• <code>${mainPrefix}clean_member 1 7 limit:10</code>
+  └ 移出7天未上线，最多10人
+
+`;
 }
 
 const clean_member = async (msg: Api.Message) => {
+  const client = await getGlobalClient();
+  if (!client) {
+    await msg.edit({ text: "❌ 客户端未初始化", parseMode: "html" });
+    return;
+  }
+
   if (!(await checkAdminPermissions(msg))) {
     await msg.edit({
       text: "❌ 权限不足，需要管理员权限",
@@ -674,74 +622,93 @@ const clean_member = async (msg: Api.Message) => {
     return;
   }
 
-  const args = msg.message.slice(1).split(" ").slice(1);
+  // acron.ts 模式参数解析
+  const lines = msg.text?.trim()?.split(/\r?\n/g) || [];
+  const parts = lines?.[0]?.split(/\s+/) || [];
+  const [, ...args] = parts;
+  const mode = (args[0] || "").toLowerCase();
 
-  if (args.length === 0) {
+  // 无参数时显示错误提示
+  if (!mode) {
     await msg.edit({
-      text: getHelpText(),
-      parseMode: "html",
+      text: `❌ <b>参数不足</b>\n\n💡 使用 <code>${mainPrefix}clean_member help</code> 查看帮助`,
+      parseMode: "html"
     });
     return;
   }
 
-  const mode = args[0] || "0";
+  // 明确请求帮助时才显示
+  if (mode === "help" || mode === "h") {
+    await msg.edit({ text: getHelpText(), parseMode: "html" });
+    return;
+  }
+
   let day = 0;
   let onlySearch = false;
+  let maxRemove: number | undefined = undefined;
 
+  // 检查是否包含 search 参数
   if (args.some((arg) => arg.toLowerCase() === "search")) {
     onlySearch = true;
   }
+  
+  // 检查是否包含 limit 参数
+  const limitArg = args.find((arg) => arg.toLowerCase().startsWith("limit:"));
+  if (limitArg) {
+    const limitValue = limitArg.split(":")[1];
+    const parsed = parseInt(limitValue);
+    if (!isNaN(parsed) && parsed > 0) {
+      maxRemove = parsed;
+    }
+  }
 
+  // 参数验证
   if (mode === "1") {
     if (args.length < 2) {
       await msg.edit({
-        text: "❌ 模式1需要指定天数，例: `clean_member 1 7 search`",
+        text: `❌ <b>参数不足</b>\n\n模式1需要指定天数\n💡 示例: <code>${mainPrefix}clean_member 1 7 search</code>`,
         parseMode: "html",
       });
       return;
     }
-    try {
-      day = Math.max(parseInt(args[1]), 7);
-    } catch (error) {
+    day = parseInt(args[1]);
+    if (isNaN(day) || day < 1) {
       await msg.edit({
-        text: "❌ 天数必须为数字",
+        text: `❌ <b>参数错误</b>\n\n天数必须为正整数`,
         parseMode: "html",
       });
       return;
     }
+    day = Math.max(day, 7); // 最少7天
   } else if (mode === "2") {
     if (args.length < 2) {
       await msg.edit({
-        text: "❌ 模式2需要指定天数，例: `clean_member 2 30 search`",
+        text: `❌ <b>参数不足</b>\n\n模式2需要指定天数\n💡 示例: <code>${mainPrefix}clean_member 2 30 search</code>`,
         parseMode: "html",
       });
       return;
     }
-    try {
-      day = Math.max(parseInt(args[1]), 7);
-    } catch (error) {
+    day = parseInt(args[1]);
+    if (isNaN(day) || day < 1) {
       await msg.edit({
-        text: "❌ 天数必须为数字",
+        text: `❌ <b>参数错误</b>\n\n天数必须为正整数`,
         parseMode: "html",
       });
       return;
     }
+    day = Math.max(day, 7); // 最少7天
   } else if (mode === "3") {
     if (args.length < 2) {
       await msg.edit({
-        text: "❌ 模式3需要指定发言数，例: `clean_member 3 5 search`",
+        text: `❌ <b>参数不足</b>\n\n模式3需要指定发言数\n💡 示例: <code>${mainPrefix}clean_member 3 5 search</code>`,
         parseMode: "html",
       });
       return;
     }
-    try {
-      day = parseInt(args[1]);
-      if (isNaN(day)) {
-        throw new Error("Invalid number");
-      }
-    } catch (error) {
+    day = parseInt(args[1]);
+    if (isNaN(day) || day < 1) {
       await msg.edit({
-        text: "❌ 发言数必须为数字",
+        text: `❌ <b>参数错误</b>\n\n发言数必须为正整数`,
         parseMode: "html",
       });
       return;
@@ -750,7 +717,7 @@ const clean_member = async (msg: Api.Message) => {
     day = 0;
   } else {
     await msg.edit({
-      text: "❌ 无效模式，请输入1-5，使用 `clean_member` 查看帮助",
+      text: `❌ <b>无效模式</b>\n\n请输入1-5之间的数字\n💡 使用 <code>${mainPrefix}clean_member help</code> 查看帮助`,
       parseMode: "html",
     });
     return;
@@ -778,127 +745,247 @@ const clean_member = async (msg: Api.Message) => {
     return;
   }
 
-  if (onlySearch) {
-    await msg.edit({
-      text: "🔍 开始搜索: " + modeNames[mode],
-      parseMode: "html",
-    });
+  // 初始化提示 - 在原消息编辑
+  const startMessage = onlySearch ? 
+    `🔍 开始搜索: ${modeNames[mode]}` : 
+    `🧹 开始清理: ${modeNames[mode]}`;
+  
+  await msg.edit({
+    text: `📋 <b>群组清理任务启动</b>\n\n🏷️ 群组: <b>${htmlEscape(chatTitle)}</b>\n🎯 ${startMessage}\n\n⏳ 正在初始化...`,
+    parseMode: "html",
+  });
+  
+  // 保存收藏夹消息ID，用于备用
+  let savedMessageId: number | null = null;
+  let useOriginalMessage = true; // 标记是否使用原消息
 
-    const statusCallback = async (message: string) => {
-      try {
-        await msg.edit({
-          text: message,
-          parseMode: "html",
-        });
-        await sleep(100); // 防止过于频繁的更新
-      } catch (error) {
-        console.log("Status update failed:", error);
+  // 状态回调函数 - 优先编辑原消息，失败则发送到收藏夹
+  let lastUpdateTime = Date.now();
+  const MIN_UPDATE_INTERVAL = 2000; // 最小更新间隔2秒，避免过于频繁
+  
+  const statusCallback = async (message: string, forceUpdate: boolean = false) => {
+    try {
+      // 控制更新频率
+      const now = Date.now();
+      if (!forceUpdate && now - lastUpdateTime < MIN_UPDATE_INTERVAL) {
+        return;
       }
-    };
-
-    const client = await getGlobalClient();
-    const cacheData = await getTargetUsersCached(
-      client!,
-      chatId,
-      mode,
-      day,
-      chatTitle,
-      statusCallback
-    );
-
-    await msg.edit({
-      text: `✅ 搜索完成\n\n📊 找到 ${
-        cacheData.total_found
-      } 名符合条件用户\n📁 报告已保存至 \`${CACHE_DIR}/\`\n\n💡 执行清理: \`clean_member ${mode}${
-        day > 0 ? " " + day : ""
-      }\``,
-      parseMode: "html",
-    });
-  } else {
-    await msg.edit({
-      text: `🧹 开始清理: ${modeNames[mode]}`,
-      parseMode: "html",
-    });
-
-    const statusCallback = async (message: string) => {
-      try {
-        await msg.edit({
-          text: message,
-          parseMode: "html",
-        });
-        await sleep(100);
-      } catch (error) {
-        console.log("Status update failed:", error);
-      }
-    };
-
-    const client = await getGlobalClient();
-    const cacheData = await getTargetUsersCached(
-      client!,
-      chatId,
-      mode,
-      day,
-      chatTitle,
-      statusCallback
-    );
-
-    let memberCount = 0;
-    const totalUsers = cacheData.users.length;
-
-    const channelEntity = chatId;
-
-    await msg.edit({
-      text: `🚀 开始移除 ${totalUsers} 名成员`,
-      parseMode: "html",
-    });
-
-    for (let i = 0; i < cacheData.users.length; i++) {
-      const userInfo = cacheData.users[i];
-      const userName = userInfo.username
-        ? `@${userInfo.username}`
-        : `${userInfo.first_name} ${userInfo.last_name}`.trim();
-
-      try {
-        await kickChatMember(client!, channelEntity, userInfo.id);
-        memberCount++;
-
-        // 每处理5个用户或每10%进度更新状态
-        if (
-          (i + 1) % 5 === 0 ||
-          (i + 1) % Math.max(1, Math.floor(totalUsers / 10)) === 0
-        ) {
-          const progress = (((i + 1) / totalUsers) * 100).toFixed(1);
-          const eta =
-            totalUsers > 0 ? Math.ceil((totalUsers - i - 1) * 1.5) : 0; // 估算剩余时间(秒)
+      lastUpdateTime = now;
+      
+      const progressMessage = `📋 <b>群组清理进度</b>\n\n🏷️ 群组: <b>${htmlEscape(chatTitle)}</b>\n📊 ${message}\n\n⏰ 更新时间: ${new Date().toLocaleTimeString('zh-CN')}`;
+      
+      if (useOriginalMessage) {
+        try {
+          // 尝试编辑原消息
           await msg.edit({
-            text: ` 移除中: ${
-              i + 1
-            }/${totalUsers} (${progress}%) | 已踢出: ${memberCount} | 当前: ${userName}`,
+            text: progressMessage,
             parseMode: "html",
           });
+        } catch (editError: any) {
+          // 如果编辑失败（消息被删除等），切换到收藏夹
+          console.log("原消息编辑失败，切换到收藏夹:", editError);
+          useOriginalMessage = false;
+          
+          // 发送到收藏夹
+          const savedMsg = await client.sendMessage("me", {
+            message: `⚠️ <b>原消息已被删除，进度转移到收藏夹</b>\n\n${progressMessage}`,
+            parseMode: "html",
+          });
+          
+          if (savedMsg && typeof savedMsg.id === 'number') {
+            savedMessageId = savedMsg.id;
+          }
         }
-      } catch (error: any) {
-        console.error(`Failed to kick user ${userInfo.id}:`, error);
-        // 继续处理下一个用户，不中断整个流程
+      } else {
+        // 使用收藏夹消息
+        if (savedMessageId) {
+          try {
+            // 尝试编辑收藏夹中的消息
+            await client.editMessage("me", {
+              message: savedMessageId,
+              text: progressMessage,
+              parseMode: "html",
+            });
+          } catch (error) {
+            // 如果编辑失败，发送新消息
+            const newMsg = await client.sendMessage("me", {
+              message: progressMessage,
+              parseMode: "html",
+            });
+            if (newMsg && typeof newMsg.id === 'number') {
+              savedMessageId = newMsg.id;
+            }
+          }
+        } else {
+          // 如果没有保存的消息ID，发送新消息
+          const newMsg = await client.sendMessage("me", {
+            message: progressMessage,
+            parseMode: "html",
+          });
+          if (newMsg && typeof newMsg.id === 'number') {
+            savedMessageId = newMsg.id;
+          }
+        }
       }
-
-      await sleep(1000 + Math.random() * 1000);
+    } catch (error) {
+      console.log("Status update failed:", error);
     }
+  };
 
-    const successRate =
-      totalUsers > 0 ? ((memberCount / totalUsers) * 100).toFixed(1) : "0";
-    const failedCount = totalUsers - memberCount;
-    await msg.edit({
-      text: `🎉 清理完成\n\n✅ 成功: ${memberCount} | ❌ 失败: ${failedCount} | 成功率: ${successRate}%\n📁 日志已保存至 \`${CACHE_DIR}/\``,
+  // 获取 channel entity
+  const channelEntity = chatId;
+  let numericChatId: number = 0;
+  
+  try {
+    // 提取数字ID用于缓存
+    if (typeof chatId === "object" && "channelId" in chatId) {
+      numericChatId = Number((chatId as any).channelId);
+    } else if (typeof chatId === "object" && "chatId" in chatId) {
+      numericChatId = Number((chatId as any).chatId);
+    } else {
+      numericChatId = Number(chatId);
+    }
+  } catch (error) {
+    console.error("Failed to extract numeric chat ID:", error);
+  }
+
+  // 检查缓存（仅搜索模式）
+  if (onlySearch && numericChatId) {
+    const cached = await checkCache(numericChatId, mode, day, statusCallback);
+    if (cached) {
+      // 生成报告
+      try {
+        await generateReport(cached);
+      } catch (error) {
+        console.error("Failed to generate report:", error);
+      }
+      
+      await msg.edit({
+        text: `✅ 搜索完成（缓存）\n\n📊 找到 ${cached.total_found} 名符合条件用户\n📁 报告已保存至 \`${CACHE_DIR}/\`\n\n💡 执行清理: \`${mainPrefix}clean_member ${mode}${day > 0 ? " " + day : ""}\``,
+        parseMode: "html",
+      });
+      return;
+    }
+  }
+
+  // 获取管理员列表
+  await statusCallback(`👤 获取管理员权限...`, true);
+  const adminIds = await getAdminIds(client, channelEntity);
+  
+  await statusCallback(
+    `🎯 准备${onlySearch ? "搜索" : "清理"}: ${modeNames[mode]} | 管理员: ${adminIds.size}`,
+    true
+  );
+
+  // 最终结果
+  const result = await streamProcessMembers({
+    client,
+    chatEntity: channelEntity,
+    mode,
+    day,
+    adminIds,
+    onlySearch,
+    maxRemove,
+    statusCallback,
+    modeNames
+  });
+
+  // 设置缓存
+  if (numericChatId) {
+    const cacheData: CacheData = {
+      chat_id: numericChatId,
+      chat_title: chatTitle,
+      mode,
+      day,
+      search_time: new Date().toISOString(),
+      total_found: result.totalFound,
+      users: result.users
+    };
+    setCache(numericChatId, mode, day, cacheData);
+  }
+
+  // 显示最终结果
+  let finalMessage = "";
+  if (onlySearch) {
+    finalMessage = `✅ <b>搜索完成</b> - ${modeNames[mode]}\n\n` +
+      `📊 扫描人数: <code>${result.totalScanned}</code> 人\n` +
+      `🎯 符合条件: <code>${result.totalFound}</code> 人\n` +
+      `📁 报告位置: <code>${CACHE_DIR}/</code>\n\n` +
+      `💡 <b>执行清理命令:</b>\n` +
+      `<code>${mainPrefix}clean_member ${mode}${day > 0 ? " " + day : ""}</code>`;
+  } else {
+    const successRate = result.totalFound > 0 
+      ? ((result.totalRemoved / result.totalFound) * 100).toFixed(1) 
+      : "0";
+    const failedCount = result.totalFound - result.totalRemoved;
+    const limitReached = maxRemove && result.totalRemoved >= maxRemove;
+    
+    finalMessage = `🎉 <b>清理完成</b> - ${modeNames[mode]}${limitReached ? " (已达上限)" : ""}\n\n` +
+      `📊 扫描人数: <code>${result.totalScanned}</code> 人\n` +
+      `🎯 符合条件: <code>${result.totalFound}</code> 人\n` +
+      `✅ 成功移出: <code>${result.totalRemoved}</code> 人` +
+      (maxRemove ? ` / 上限 <code>${maxRemove}</code>` : "") + `\n` +
+      `❌ 失败/跳过: <code>${failedCount}</code> 人\n` +
+      `📈 成功率: <code>${successRate}%</code>\n` +
+      `📁 报告位置: <code>${CACHE_DIR}/</code>`;
+  }
+  
+  // 尝试编辑原消息显示最终结果
+  try {
+    if (useOriginalMessage) {
+      await msg.edit({
+        text: finalMessage,
+        parseMode: "html",
+      });
+    } else {
+      // 如果原消息已被删除，在收藏夹中显示最终结果
+      if (savedMessageId) {
+        await client.editMessage("me", {
+          message: savedMessageId,
+          text: finalMessage,
+          parseMode: "html",
+        });
+      } else {
+        await client.sendMessage("me", {
+          message: finalMessage,
+          parseMode: "html",
+        });
+      }
+    }
+  } catch (error) {
+    console.error("显示最终结果失败:", error);
+    // 如果都失败了，至少发送到收藏夹
+    await client.sendMessage("me", {
+      message: finalMessage,
       parseMode: "html",
     });
+  }
+  
+  // 如果使用了收藏夹，额外发送一份完整报告
+  if (!useOriginalMessage) {
+    try {
+      const reportMessage = `📋 <b>群组清理最终报告</b>\n\n` +
+        `🏷️ 群组: <b>${htmlEscape(chatTitle)}</b>\n` +
+        `🔧 模式: ${modeNames[mode]}\n` +
+        `📅 时间: ${new Date().toLocaleString('zh-CN')}\n\n` +
+        `⚠️ 注意：原消息已被删除，报告已转移到收藏夹\n\n` +
+        finalMessage;
+      
+      await client.sendMessage("me", {
+        message: reportMessage,
+        parseMode: "html",
+      });
+      console.log("完整报告已发送到收藏夹");
+    } catch (error) {
+      console.error("发送完整报告失败:", error);
+    }
   }
 };
 
 class CleanMemberPlugin extends Plugin {
-  description: string = `🧹 群成员清理工具 - 支持多种清理模式和进度跟踪`;
+  description: string = getHelpText();
   cmdHandlers: Record<string, (msg: Api.Message) => Promise<void>> = {
-    clean_member,
+    clean_member
   };
 }
 
